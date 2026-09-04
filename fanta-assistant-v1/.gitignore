@@ -1,0 +1,11 @@
+# Cache e dipendenze Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Cache e dipendenze Backend
+backend/__pycache__/
+backend/.venv/
+backend/venv/
+
+# Sistema Operativo
+.DS_Store
