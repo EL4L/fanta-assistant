@@ -19,7 +19,6 @@ import {
 import toast, { Toaster } from "react-hot-toast";
 import "./styles.css";
 
-
 const API = "http://localhost:8000/api";
 
 type Player = {
@@ -32,12 +31,15 @@ type Player = {
   tier: string;
   fantasy_score: number;
   auction_price: number | null;
-  favorite: number;
   target: number;
   my_max: number;
-  status: string;
+  fanta_team: string | null;
   purchase_price: number;
 };
+
+const TEAMS = ["Mio Team", "Luca", "Leonardo", "Valerio", "Patrizio", "Lorenzo", "Dario"];
+const TOTAL_BUDGET = 500;
+const formatPct = (val: number) => `(${((val / TOTAL_BUDGET) * 100).toFixed(1)}%)`;
 
 type Page = "Dashboard" | "Listone" | "Obiettivi" | "Asta Live";
 type ConnectionStatus = "connecting" | "online" | "offline";
@@ -61,11 +63,6 @@ const TIERS = [
   "6. Riserve",
 ];
 
-// Budget totale asta (crediti). Se la tua lega ne usa uno diverso, cambia solo qui.
-const TOTAL_BUDGET = 500;
-
-// Slot di rosa per ruolo. Default classico 3-8-8-6 (25 giocatori totali).
-// Adatta ai regolamenti della tua lega, se diversi.
 const ROLE_SLOTS: RoleCounts = {
   P: 3,
   D: 8,
@@ -86,14 +83,15 @@ function App() {
 
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(true);
-  const [connection, setConnection] =
-    useState<ConnectionStatus>("connecting");
+  const [connection, setConnection] = useState<ConnectionStatus>("connecting");
 
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("Tutti");
   const [tierFilter, setTierFilter] = useState("Tutte");
   const [onlyTargets, setOnlyTargets] = useState(false);
-  const [onlyFavorites, setOnlyFavorites] = useState(false);
+  const [showOnlyFree, setShowOnlyFree] = useState(true);
+  const [assignTeam, setAssignTeam] = useState("Mio Team");
+  const [strategyTarget, setStrategyTarget] = useState({ P: 10, D: 15, C: 30, A: 45 });
 
   const [activePlayer, setActivePlayer] = useState<Player | null>(null);
   const [bidPrice, setBidPrice] = useState(1);
@@ -101,24 +99,15 @@ function App() {
 
   const [editingMaxId, setEditingMaxId] = useState<number | null>(null);
   const [editingMaxValue, setEditingMaxValue] = useState("");
-
   const [updatingIds, setUpdatingIds] = useState<number[]>([]);
 
-async function loadPlayers() {
+  async function loadPlayers() {
     try {
       setConnection("connecting");
-
       const response = await fetch(`${API}/players`);
-
-      if (!response.ok) {
-        throw new Error("API error");
-      }
+      if (!response.ok) throw new Error("API error");
 
       const data = await response.json();
-
-      // --- NOVITÀ: ADATTAMENTO FVM AL BUDGET ---
-      // Divide l'FVM per 2 (da 1000 a 500 crediti). 
-      // Usiamo Math.round per evitare decimali e Math.max per garantire che valga almeno 1.
       const adjustedData = data.map((player: Player) => ({
         ...player,
         fvm: Math.max(1, Math.round(player.fvm / 2))
@@ -141,7 +130,6 @@ async function loadPlayers() {
   async function updatePlayer(id: number, changes: Partial<Player>) {
     const previousPlayers = players;
 
-    // Aggiornamento immediato UI (Optimistic UI)
     setPlayers((current) =>
       current.map((player) =>
         player.id === id ? { ...player, ...changes } : player
@@ -157,30 +145,21 @@ async function loadPlayers() {
       });
 
       if (!response.ok) throw new Error("Aggiornamento fallito");
-      
-      // Se è un acquisto, mostra il toast di successo!
-      if (changes.status === "Mio Team") {
+
+      if (changes.fanta_team === "Mio Team") {
         toast.success("Giocatore acquistato!");
       }
     } catch (error) {
       console.error("Errore aggiornamento:", error);
       toast.error("Errore di rete. Modifica annullata.");
-      setPlayers(previousPlayers); // Rollback in caso di errore
+      setPlayers(previousPlayers);
     } finally {
       setUpdatingIds((current) => current.filter((item) => item !== id));
     }
   }
 
-  function toggleFavorite(player: Player) {
-    updatePlayer(player.id, {
-      favorite: player.favorite ? 0 : 1,
-    });
-  }
-
   function toggleTarget(player: Player) {
-    updatePlayer(player.id, {
-      target: player.target ? 0 : 1,
-    });
+    updatePlayer(player.id, { target: player.target ? 0 : 1 });
   }
 
   function startEditingMax(player: Player) {
@@ -190,23 +169,17 @@ async function loadPlayers() {
 
   async function saveMax(player: Player) {
     const parsed = Number(editingMaxValue);
-
     if (!Number.isFinite(parsed) || parsed < 0) {
       setEditingMaxId(null);
       return;
     }
-
-    await updatePlayer(player.id, {
-      my_max: Math.floor(parsed),
-    });
-
+    await updatePlayer(player.id, { my_max: Math.floor(parsed) });
     setEditingMaxId(null);
     setEditingMaxValue("");
   }
 
   const filteredPlayers = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
-
     return players
       .filter((player) => {
         const matchesSearch =
@@ -214,95 +187,50 @@ async function loadPlayers() {
           player.name.toLowerCase().includes(normalizedSearch) ||
           player.team.toLowerCase().includes(normalizedSearch);
 
-        const matchesRole =
-          roleFilter === "Tutti" || player.role === roleFilter;
+        const matchesRole = roleFilter === "Tutti" || player.role === roleFilter;
+        const matchesTier = tierFilter === "Tutte" || player.tier === tierFilter;
+        const matchesTarget = !onlyTargets || Boolean(player.target);
+        const isFreeMatch = !showOnlyFree || player.fanta_team;
 
-        const matchesTier =
-          tierFilter === "Tutte" || player.tier === tierFilter;
-
-        const matchesTarget =
-          !onlyTargets || Boolean(player.target);
-
-        const matchesFavorite =
-          !onlyFavorites || Boolean(player.favorite);
-
-        const isFree = player.status === "Libero";
-
-        return (
-          matchesSearch &&
-          matchesRole &&
-          matchesTier &&
-          matchesTarget &&
-          matchesFavorite &&
-          isFree
-        );
+        return matchesSearch && matchesRole && matchesTier && matchesTarget && isFreeMatch;
       })
       .sort((a, b) => {
-        // Obiettivi e preferiti leggermente prioritari
         if (a.target !== b.target) return b.target - a.target;
-        if (a.favorite !== b.favorite) return b.favorite - a.favorite;
-
+        if (a.tier !== b.tier) return a.tier.localeCompare(b.tier);
         return b.fvm - a.fvm;
       });
-  }, [
-    players,
-    search,
-    roleFilter,
-    tierFilter,
-    onlyTargets,
-    onlyFavorites,
-  ]);
+  }, [players, search, roleFilter, tierFilter, onlyTargets, showOnlyFree]);
 
   const targetPlayers = useMemo(
-    () => players.filter((player) => player.target && player.status === "Libero"),
-    [players]
-  );
-
-  const favoritePlayers = useMemo(
-    () =>
-      players.filter(
-        (player) => player.favorite && player.status === "Libero"
-      ),
+    () => players.filter((player) => player.target && !player.fanta_team),
     [players]
   );
 
   const myPlayers = useMemo(
-    () => players.filter((player) => player.status === "Mio Team"),
+    () => players.filter((player) => player.fanta_team === "Mio Team"),
     [players]
   );
 
-  // ---- Budget dinamico: crediti spesi = somma dei purchase_price della rosa ----
   const budgetSpent = useMemo(
-    () =>
-      myPlayers.reduce(
-        (sum, player) => sum + (player.purchase_price || 0),
-        0
-      ),
+    () => myPlayers.reduce((sum, player) => sum + (player.purchase_price || 0), 0),
     [myPlayers]
   );
-
   const budgetRemaining = TOTAL_BUDGET - budgetSpent;
 
-  // ---- Slot rosa: quanti giocatori hai già per ciascun ruolo ----
   const roleCounts = useMemo(() => {
     const counts: RoleCounts = { P: 0, D: 0, C: 0, A: 0 };
-
     myPlayers.forEach((player) => {
       counts[player.role] = (counts[player.role] || 0) + 1;
     });
-
     return counts;
   }, [myPlayers]);
 
   const auctionPlayers = useMemo(() => {
     const normalized = auctionSearch.trim().toLowerCase();
-
     return players
       .filter((player) => {
-        if (player.status !== "Libero") return false;
-
+        if (player.fanta_team) return false;
         if (!normalized) return true;
-
         return (
           player.name.toLowerCase().includes(normalized) ||
           player.team.toLowerCase().includes(normalized)
@@ -310,44 +238,43 @@ async function loadPlayers() {
       })
       .sort((a, b) => {
         if (a.target !== b.target) return b.target - a.target;
-        if (a.favorite !== b.favorite) return b.favorite - a.favorite;
+        if (a.tier !== b.tier) return a.tier.localeCompare(b.tier);
         return b.fvm - a.fvm;
       });
   }, [players, auctionSearch]);
 
   function openAuction(player: Player) {
     setActivePlayer(player);
-
     const initialPrice =
       player.auction_price && player.auction_price > 0
         ? player.auction_price
         : player.fvm > 0
         ? player.fvm
         : 1;
-
     setBidPrice(initialPrice);
   }
 
   async function assignPlayer() {
     if (!activePlayer) return;
 
-    // Guardia di sicurezza: non assegnare se il ruolo è già al completo
-    // (in UI il bottone è comunque disabilitato in questo caso).
-    const roleLimit = ROLE_SLOTS[activePlayer.role] ?? Infinity;
-    const currentRoleCount = roleCounts[activePlayer.role] ?? 0;
-
-    if (currentRoleCount >= roleLimit) {
-      return;
+    if (assignTeam === "Mio Team") {
+      const roleLimit = ROLE_SLOTS[activePlayer.role] ?? Infinity;
+      const currentRoleCount = roleCounts[activePlayer.role] ?? 0;
+      if (currentRoleCount >= roleLimit) {
+        toast.error(`Hai raggiunto il limite per il ruolo ${ROLE_LABELS[activePlayer.role]}!`);
+        return;
+      }
     }
 
     await updatePlayer(activePlayer.id, {
-      status: "Mio Team",
+      fanta_team: assignTeam,
       purchase_price: bidPrice,
       auction_price: bidPrice,
     });
 
     setActivePlayer(null);
     setBidPrice(1);
+    setAssignTeam("Mio Team");
   }
 
   function clearFilters() {
@@ -355,7 +282,6 @@ async function loadPlayers() {
     setRoleFilter("Tutti");
     setTierFilter("Tutte");
     setOnlyTargets(false);
-    setOnlyFavorites(false);
   }
 
   if (loading) {
@@ -375,6 +301,7 @@ async function loadPlayers() {
   return (
     <div className={`app ${theme}`}>
       <Toaster position="bottom-right" toastOptions={{ style: { background: '#1e293b', color: '#fff' } }} />
+      
       <Sidebar
         page={page}
         setPage={setPage}
@@ -396,9 +323,11 @@ async function loadPlayers() {
           <Dashboard
             players={players}
             targets={targetPlayers}
-            favorites={favoritePlayers}
             myPlayers={myPlayers}
             onNavigate={setPage}
+            strategyTarget={strategyTarget}
+            setStrategyTarget={setStrategyTarget}
+            roleCounts={roleCounts}
           />
         )}
 
@@ -414,14 +343,13 @@ async function loadPlayers() {
             setTierFilter={setTierFilter}
             onlyTargets={page === "Obiettivi" ? true : onlyTargets}
             setOnlyTargets={setOnlyTargets}
-            onlyFavorites={onlyFavorites}
-            setOnlyFavorites={setOnlyFavorites}
+            showOnlyFree={showOnlyFree}
+            setShowOnlyFree={setShowOnlyFree}
             editingMaxId={editingMaxId}
             editingMaxValue={editingMaxValue}
             setEditingMaxValue={setEditingMaxValue}
             startEditingMax={startEditingMax}
             saveMax={saveMax}
-            toggleFavorite={toggleFavorite}
             toggleTarget={toggleTarget}
             updatingIds={updatingIds}
             clearFilters={clearFilters}
@@ -441,6 +369,8 @@ async function loadPlayers() {
             closeAuction={() => setActivePlayer(null)}
             updatingIds={updatingIds}
             roleCounts={roleCounts}
+            assignTeam={assignTeam}
+            setAssignTeam={setAssignTeam}
           />
         )}
       </main>
@@ -449,7 +379,7 @@ async function loadPlayers() {
 }
 
 /* =========================================================
-   SIDEBAR
+   SIDEBAR (ERA QUESTO IL PEZZO CHE MANCAVA!)
 ========================================================= */
 
 function Sidebar({
@@ -512,7 +442,6 @@ function Sidebar({
           <div className="budget-icon">
             <Wallet size={18} />
           </div>
-
           <div className="budget-content">
             <span>Budget disponibile</span>
             <b>{budget} cr</b>
@@ -526,7 +455,6 @@ function Sidebar({
             <span>Rosa</span>
             <b>{playerCount}</b>
           </div>
-
           <div>
             <span>Stagione</span>
             <b>26/27</b>
@@ -685,17 +613,27 @@ function ConnectionBadge({ status }: { status: ConnectionStatus }) {
 function Dashboard({
   players,
   targets,
-  favorites,
   myPlayers,
   onNavigate,
+  strategyTarget,
+  setStrategyTarget,
+  roleCounts,
 }: {
   players: Player[];
   targets: Player[];
-  favorites: Player[];
   myPlayers: Player[];
   onNavigate: (page: Page) => void;
+  strategyTarget: Record<string, number>;
+  setStrategyTarget: React.Dispatch<React.SetStateAction<Record<string, number>>>;
+  roleCounts: Record<string, number>;
 }) {
-  const freePlayers = players.filter((p) => p.status === "Libero");
+  const freePlayers = players.filter((p) => p.fanta_team);
+  const handleStrategyChange = (role: string, val: number) => {
+    setStrategyTarget((prev) => ({
+      ...prev,
+      [role]: Math.max(0, Math.min(100, val)),
+    }));
+  };
 
   return (
     <div className="dashboard">
@@ -719,7 +657,7 @@ function Dashboard({
         </button>
       </div>
 
-      <div className="stats-grid">
+      <div className="stats-grid" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
         <StatCard
           label="Giocatori disponibili"
           value={freePlayers.length}
@@ -733,17 +671,74 @@ function Dashboard({
         />
 
         <StatCard
-          label="Preferiti"
-          value={favorites.length}
-          icon={<Star size={20} />}
-        />
-
-        <StatCard
           label="Nella tua rosa"
           value={myPlayers.length}
           icon={<Check size={20} />}
         />
       </div>
+
+      <section className="dashboard-panel strategy-section">
+        <div className="panel-header">
+          <div>
+            <span className="eyebrow">STRATEGIA BUDGET E ROSA</span>
+            <h3>Stato completamento ({myPlayers.length}/25)</h3>
+          </div>
+        </div>
+        <div className="strategy-list">
+          {["P", "D", "C", "A"].map((r) => {
+            const roleSpent = myPlayers
+              .filter((p) => p.role === r)
+              .reduce((sum, p) => sum + (p.purchase_price || 0), 0);
+            
+            const budgetAllocato = Math.round((TOTAL_BUDGET * (strategyTarget[r] || 0)) / 100);
+            const limit = ROLE_SLOTS[r];
+            const count = roleCounts[r] || 0;
+            const isFull = count >= limit;
+            const fillPercentage = budgetAllocato > 0 ? Math.min(100, (roleSpent / budgetAllocato) * 100) : 0;
+            
+            return (
+              <div key={r} className="strategy-row">
+                <div className="strategy-info">
+                  <RoleBadge role={r} />
+                  <div>
+                    <b>{ROLE_LABELS[r]}</b>
+                    <span>
+                      {count}/{limit}{" "}
+                      {isFull && <span style={{ color: "var(--danger)" }}>(COMPLETO)</span>}
+                    </span>
+                  </div>
+                </div>
+                
+                <div className="strategy-controls">
+                  <label>Target %</label>
+                  <input 
+                    type="number" 
+                    value={strategyTarget[r] || 0} 
+                    onChange={(e) => handleStrategyChange(r, Number(e.target.value))} 
+                  />
+                </div>
+                
+                <div className="strategy-bar-container">
+                  <div className="strategy-stats">
+                    <small>Spesi: {roleSpent} cr</small>
+                    <small>Target: {budgetAllocato} cr</small>
+                  </div>
+                  <div className="strategy-bar">
+                    <div className="strategy-bar-target" style={{ width: "100%" }}></div>
+                    <div 
+                      className="strategy-bar-fill" 
+                      style={{ 
+                        width: `${fillPercentage}%`, 
+                        background: roleSpent > budgetAllocato ? "var(--danger)" : "var(--accent)" 
+                      }}
+                    ></div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
 
       <div className="dashboard-grid">
         <section className="dashboard-panel">
@@ -868,14 +863,13 @@ function Listone({
   setTierFilter,
   onlyTargets,
   setOnlyTargets,
-  onlyFavorites,
-  setOnlyFavorites,
+  showOnlyFree,
+  setShowOnlyFree,
   editingMaxId,
   editingMaxValue,
   setEditingMaxValue,
   startEditingMax,
   saveMax,
-  toggleFavorite,
   toggleTarget,
   updatingIds,
   clearFilters,
@@ -890,14 +884,13 @@ function Listone({
   setTierFilter: (value: string) => void;
   onlyTargets: boolean;
   setOnlyTargets: (value: boolean) => void;
-  onlyFavorites: boolean;
-  setOnlyFavorites: (value: boolean) => void;
+  showOnlyFree: boolean;
+  setShowOnlyFree: (value: boolean) => void;
   editingMaxId: number | null;
   editingMaxValue: string;
   setEditingMaxValue: (value: string) => void;
   startEditingMax: (player: Player) => void;
   saveMax: (player: Player) => void;
-  toggleFavorite: (player: Player) => void;
   toggleTarget: (player: Player) => void;
   updatingIds: number[];
   clearFilters: () => void;
@@ -907,7 +900,7 @@ function Listone({
     roleFilter !== "Tutti" ||
     tierFilter !== "Tutte" ||
     onlyTargets ||
-    onlyFavorites;
+    !showOnlyFree; 
 
   return (
     <>
@@ -960,12 +953,12 @@ function Listone({
         </div>
 
         <button
-          className={`btn-filter ${onlyFavorites ? "sel" : ""}`}
+          className={`btn-filter ${showOnlyFree ? "sel" : ""}`}
           type="button"
-          onClick={() => setOnlyFavorites(!onlyFavorites)}
+          onClick={() => setShowOnlyFree(!showOnlyFree)}
         >
-          <Star size={16} fill={onlyFavorites ? "currentColor" : "none"} />
-          Preferiti
+          <Users size={16} />
+          Svincolati
         </button>
 
         <button
@@ -981,7 +974,10 @@ function Listone({
           <button
             className="clear-filters"
             type="button"
-            onClick={clearFilters}
+            onClick={() => {
+              clearFilters();
+              setShowOnlyFree(true); 
+            }}
           >
             <X size={15} />
             Reset
@@ -992,7 +988,7 @@ function Listone({
       <div className="listone-meta">
         <div>
           <b>{page === "Obiettivi" ? "I tuoi obiettivi" : "Listone"}</b>
-          <span>{players.length} giocatori disponibili</span>
+          <span>{players.length} giocatori mostrati</span>
         </div>
 
         {page === "Obiettivi" && (
@@ -1031,20 +1027,6 @@ function Listone({
                       <button
                         type="button"
                         className={`table-action ${
-                          player.favorite ? "favorite-active" : ""
-                        }`}
-                        title="Preferito"
-                        onClick={() => toggleFavorite(player)}
-                      >
-                        <Star
-                          size={17}
-                          fill={player.favorite ? "currentColor" : "none"}
-                        />
-                      </button>
-
-                      <button
-                        type="button"
-                        className={`table-action ${
                           player.target ? "target-active" : ""
                         }`}
                         title="Obiettivo"
@@ -1061,7 +1043,10 @@ function Listone({
 
                       <div>
                         <b>{player.name}</b>
-                        <span>{player.team}</span>
+                        <span>
+                          {player.team} 
+                          {player.fanta_team && <strong style={{color: 'var(--danger)'}}> • {player.fanta_team}</strong>}
+                        </span>
                       </div>
                     </div>
                   </td>
@@ -1077,7 +1062,9 @@ function Listone({
                   </td>
 
                   <td>
-                    <span className="fvm-value">{player.fvm}</span>
+                    <span className="fvm-value">
+                      {player.fvm} <small style={{ color: "var(--text-muted)", fontSize: "0.75rem", fontWeight: "normal" }}>{formatPct(player.fvm)}</small>
+                    </span>
                   </td>
 
                   <td>
@@ -1102,7 +1089,6 @@ function Listone({
                           }}
                           onBlur={() => saveMax(player)}
                         />
-
                         <span>cr</span>
                       </div>
                     ) : (
@@ -1151,6 +1137,8 @@ function AuctionLive({
   closeAuction,
   updatingIds,
   roleCounts,
+  assignTeam,
+  setAssignTeam,
 }: {
   players: Player[];
   search: string;
@@ -1162,11 +1150,11 @@ function AuctionLive({
   assignPlayer: () => void;
   closeAuction: () => void;
   updatingIds: number[];
-  roleCounts: RoleCounts;
+  roleCounts: Record<string, number>;
+  assignTeam: string;
+  setAssignTeam: (value: string) => void;
 }) {
-  const margin = activePlayer
-    ? activePlayer.my_max - bidPrice
-    : 0;
+  const margin = activePlayer ? activePlayer.my_max - bidPrice : 0;
 
   const isOverMax =
     Boolean(activePlayer) &&
@@ -1179,28 +1167,29 @@ function AuctionLive({
     bidPrice > activePlayer!.my_max * 0.85 &&
     !isOverMax;
 
-  // ---- Stato slot ruolo per il giocatore selezionato ----
   const roleLimit = activePlayer ? ROLE_SLOTS[activePlayer.role] ?? 0 : 0;
   const roleCount = activePlayer ? roleCounts[activePlayer.role] ?? 0 : 0;
   const isRoleFull = Boolean(activePlayer) && roleCount >= roleLimit;
+  const isMyTeamFull = assignTeam === "Mio Team" && isRoleFull;
+
   useEffect(() => {
     if (!activePlayer) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement) return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
 
       switch (e.key) {
         case "Enter":
           e.preventDefault();
-          if (!isRoleFull && !updatingIds.includes(activePlayer.id)) assignPlayer();
+          if (!isMyTeamFull && !updatingIds.includes(activePlayer.id)) assignPlayer();
           break;
         case "ArrowUp":
           e.preventDefault();
-          setBidPrice(prev => prev + 1);
+          setBidPrice((prev) => prev + 1);
           break;
         case "ArrowDown":
           e.preventDefault();
-          setBidPrice(prev => Math.max(1, prev - 1));
+          setBidPrice((prev) => Math.max(1, prev - 1));
           break;
         case "Escape":
           e.preventDefault();
@@ -1211,7 +1200,8 @@ function AuctionLive({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activePlayer, isRoleFull, updatingIds, assignPlayer, closeAuction, setBidPrice]);
+  }, [activePlayer, isMyTeamFull, updatingIds, assignPlayer, closeAuction, setBidPrice]);
+
   return (
     <div className="asta-layout">
       <div className="asta-search-panel">
@@ -1220,7 +1210,6 @@ function AuctionLive({
             <span className="eyebrow">ASTA LIVE</span>
             <h3>Giocatori disponibili</h3>
           </div>
-
           <span className="player-count">{players.length}</span>
         </div>
 
@@ -1232,12 +1221,8 @@ function AuctionLive({
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
-
           {search && (
-            <button
-              type="button"
-              onClick={() => setSearch("")}
-            >
+            <button type="button" onClick={() => setSearch("")}>
               <X size={15} />
             </button>
           )}
@@ -1254,24 +1239,26 @@ function AuctionLive({
               onClick={() => openAuction(player)}
             >
               <RoleBadge role={player.role} />
-
               <div className="asta-list-player">
                 <b>{player.name}</b>
                 <span>{player.team}</span>
               </div>
-
               <div className="asta-list-fvm">
                 <small>FVM</small>
-                <b>{player.fvm}</b>
+                <b>
+                  {player.fvm}{" "}
+                  <span style={{ fontSize: "0.6rem", fontWeight: "normal", opacity: 0.8 }}>
+                    {formatPct(player.fvm)}
+                  </span>
+                </b>
               </div>
             </button>
           ))}
-
           {!players.length && (
             <EmptyState
               icon={<Search size={22} />}
               title="Nessun risultato"
-              text="Prova con un altro nome."
+              text="Prova con un altro nome o verifica i filtri."
             />
           )}
         </div>
@@ -1284,44 +1271,32 @@ function AuctionLive({
               <span />
               LIVE
             </span>
-
-            <button
-              type="button"
-              className="close-auction"
-              onClick={closeAuction}
-            >
+            <button type="button" className="close-auction" onClick={closeAuction}>
               <X size={18} />
             </button>
           </div>
 
           <div className="auction-player">
             <RoleBadge role={activePlayer.role} large />
-
-            <span className="auction-tier">
-              {activePlayer.tier}
-            </span>
-
+            <span className="auction-tier">{activePlayer.tier}</span>
             <h2>{activePlayer.name}</h2>
             <p>{activePlayer.team}</p>
           </div>
 
           <div className="asta-stats">
-            <AuctionStat
-              label="FVM"
-              value={`${activePlayer.fvm}`}
+            <AuctionStat 
+              label="FVM" 
+              value={`${activePlayer.fvm} ${formatPct(activePlayer.fvm)}`} 
             />
-
             <AuctionStat
               label="Tuo MAX"
               value={`${activePlayer.my_max || 0} cr`}
               highlight
             />
-
             <AuctionStat
               label="Quotazione"
               value={`${activePlayer.quotation}`}
             />
-
             <AuctionStat
               label="Slot Ruolo"
               value={`${roleCount}/${roleLimit}`}
@@ -1329,27 +1304,20 @@ function AuctionLive({
             />
           </div>
 
-          {isRoleFull ? (
+          {isMyTeamFull ? (
             <div className="bid-status danger">
               <AlertCircle size={18} />
               <div>
-                <b>
-                  Ruolo {ROLE_LABELS[activePlayer.role]} al completo
-                </b>
+                <b>Ruolo {ROLE_LABELS[activePlayer.role]} al completo</b>
                 <span>
-                  Hai già {roleLimit} giocatori in questo ruolo. Libera
-                  uno slot prima di assegnarne un altro.
+                  Hai già {roleLimit} giocatori in questo ruolo. Scegli un'altra squadra o libera uno slot.
                 </span>
               </div>
             </div>
           ) : (
             <div
               className={`bid-status ${
-                isOverMax
-                  ? "danger"
-                  : isNearMax
-                  ? "warning"
-                  : "safe"
+                isOverMax ? "danger" : isNearMax ? "warning" : "safe"
               }`}
             >
               {isOverMax ? (
@@ -1357,10 +1325,7 @@ function AuctionLive({
                   <AlertCircle size={18} />
                   <div>
                     <b>Oltre il tuo MAX</b>
-                    <span>
-                      Hai superato il limite di{" "}
-                      {Math.abs(margin)} crediti.
-                    </span>
+                    <span>Hai superato il limite di {Math.abs(margin)} crediti.</span>
                   </div>
                 </>
               ) : isNearMax ? (
@@ -1368,9 +1333,7 @@ function AuctionLive({
                   <AlertCircle size={18} />
                   <div>
                     <b>Vicino al tuo limite</b>
-                    <span>
-                      Ti rimangono {margin} crediti di margine.
-                    </span>
+                    <span>Ti rimangono {margin} crediti di margine.</span>
                   </div>
                 </>
               ) : (
@@ -1378,9 +1341,7 @@ function AuctionLive({
                   <Check size={18} />
                   <div>
                     <b>Ancora conveniente</b>
-                    <span>
-                      Hai {margin} crediti di margine sul tuo MAX.
-                    </span>
+                    <span>Hai {margin} crediti di margine sul tuo MAX.</span>
                   </div>
                 </>
               )}
@@ -1388,60 +1349,62 @@ function AuctionLive({
           )}
 
           <div className="auction-price">
-            <label>PREZZO DI ACQUISTO</label>
+            <label style={{ display: "flex", justifyContent: "space-between" }}>
+              PREZZO DI ACQUISTO 
+              <span style={{ color: "var(--accent)" }}>{formatPct(bidPrice)} del budget totale</span>
+            </label>
 
             <div className="price-input">
               <button
                 type="button"
-                onClick={() =>
-                  setBidPrice(Math.max(1, bidPrice - 1))
-                }
+                onClick={() => setBidPrice(Math.max(1, bidPrice - 1))}
               >
                 −
               </button>
-
               <input
                 type="number"
                 min="1"
                 value={bidPrice}
                 onChange={(event) =>
-                  setBidPrice(
-                    Math.max(1, Number(event.target.value) || 1)
-                  )
+                  setBidPrice(Math.max(1, Number(event.target.value) || 1))
                 }
               />
-
               <span>CR</span>
-
               <button
                 type="button"
-                onClick={() =>
-                  setBidPrice(bidPrice + 1)
-                }
+                onClick={() => setBidPrice(bidPrice + 1)}
               >
                 +
               </button>
             </div>
           </div>
 
-          <button
-            type="button"
-            className="btn-assign"
-            disabled={
-              updatingIds.includes(activePlayer.id) || isRoleFull
-            }
-            onClick={assignPlayer}
-          >
-            <Check size={19} />
-            {isRoleFull ? "Ruolo al completo" : "Assegna al Mio Team"}
-          </button>
+          <div className="assign-form">
+            <select
+              value={assignTeam}
+              onChange={(e) => setAssignTeam(e.target.value)}
+              className="team-select"
+            >
+              {TEAMS.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
 
-          <button
-            type="button"
-            className="btn-cancel"
-            onClick={closeAuction}
-          >
-            Chiudi asta
+            <button
+              type="button"
+              className="btn-assign"
+              disabled={updatingIds.includes(activePlayer.id) || isMyTeamFull}
+              onClick={assignPlayer}
+            >
+              <Check size={19} />
+              {isMyTeamFull ? "Ruolo Pieno" : "Assegna"}
+            </button>
+          </div>
+
+          <button type="button" className="btn-cancel" onClick={closeAuction}>
+            Annulla
           </button>
         </div>
       ) : (
@@ -1449,21 +1412,16 @@ function AuctionLive({
           <div className="empty-auction-icon">
             <Hammer size={30} />
           </div>
-
           <h2>Pronto per l&apos;asta</h2>
-
           <p>
-            Seleziona un giocatore dalla lista per aprire
-            la sua scheda e registrare il prezzo di acquisto.
+            Seleziona un giocatore dalla lista per aprire la sua scheda e registrare il prezzo di acquisto.
           </p>
-
           <div className="auction-tip">
             <span>💡</span>
             <div>
               <b>Consiglio</b>
               <p>
-                Usa il tuo MAX per sapere subito quando
-                stai andando oltre il budget che ti eri prefissato.
+                Usa il tuo MAX per sapere subito quando stai andando oltre il budget che ti eri prefissato.
               </p>
             </div>
           </div>

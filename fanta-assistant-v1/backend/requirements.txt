@@ -3,4 +3,3 @@ uvicorn[standard]
 python-multipart
 pandas
 openpyxl
-echo openpyxl

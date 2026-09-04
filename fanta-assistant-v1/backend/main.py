@@ -8,12 +8,13 @@ DB = Path("fanta.db")
 app = FastAPI(title="Fanta Assistant API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+# AGGIORNAMENTO SCHEMA: Rimosso 'favorite', sostituito 'status' con 'fanta_team' (NULL se svincolato)
 SCHEMA = """CREATE TABLE IF NOT EXISTS players(
 id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT,team TEXT,role TEXT,
 quotation INTEGER DEFAULT 0,fvm INTEGER DEFAULT 0,tier TEXT DEFAULT '4. Quarta',
 tier_source TEXT DEFAULT 'algorithm',fantasy_score REAL DEFAULT 0,
-auction_price REAL,favorite INTEGER DEFAULT 0,target INTEGER DEFAULT 0,
-my_max INTEGER DEFAULT 0,notes TEXT DEFAULT '',status TEXT DEFAULT 'Libero',
+auction_price REAL,target INTEGER DEFAULT 0,
+my_max INTEGER DEFAULT 0,notes TEXT DEFAULT '',fanta_team TEXT DEFAULT NULL,
 purchase_price INTEGER DEFAULT 0);"""
 
 def conn():
@@ -46,7 +47,8 @@ def demo():
 
 @app.patch("/api/players/{pid}")
 def update(pid:int, body:dict):
-    allowed={"favorite","target","my_max","notes","tier"}
+    # AGGIORNAMENTO ALLOWED FIELDS per includere i dati dell'asta live
+    allowed={"target","my_max","notes","tier","fanta_team","purchase_price","auction_price"}
     vals={k:v for k,v in body.items() if k in allowed}
     if "tier" in vals: vals["tier_source"]="manual"
     c=conn()
@@ -68,33 +70,26 @@ def assign_tier(pct: float) -> str:
 @app.get("/api/import")
 def import_excel(path: str = "Quotazioni_Fantacalcio_Stagione_2026_27.xlsx"):
     fp = Path(path)
-    if not fp.exists():
-        return {"error": f"file non trovato: {fp}"}
-
+    if not fp.exists(): return {"error": f"file non trovato: {fp}"}
     wb = openpyxl.load_workbook(fp, data_only=True)
-    ws = wb["Tutti"]  # 533 giocatori attivi, esclude "Ceduti"
-
+    ws = wb["Tutti"]
     by_role = {}
     for row in ws.iter_rows(min_row=3, values_only=True):
         _id, role, rm, nome, squadra, qta, qti, diff, qtam, qtim, diffm, fvm, fvmm = row
-        if not nome:
-            continue
+        if not nome: continue
         by_role.setdefault(role, []).append((nome, squadra, qta, fvm))
-
     records = []
     for role, players_list in by_role.items():
-        players_list.sort(key=lambda p: p[3] or 0, reverse=True)  # ordina per FVM decrescente
+        players_list.sort(key=lambda p: p[3] or 0, reverse=True)
         n = len(players_list)
         for i, (nome, squadra, qta, fvm) in enumerate(players_list):
             pct = 1 - i / n
             records.append((nome, squadra, role, qta or 0, fvm or 0, assign_tier(pct)))
-
     c = conn()
     c.execute("delete from players")
     c.executemany(
         """insert into players (name, team, role, quotation, fvm, tier, tier_source)
-           values (?, ?, ?, ?, ?, ?, 'algorithm')""",
-        records
+           values (?, ?, ?, ?, ?, ?, 'algorithm')""", records
     )
     c.commit()
     total = c.execute("select count(*) from players").fetchone()[0]
